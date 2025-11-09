@@ -16,7 +16,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Show environment (Git Bash)
-        # REPLACE the path below if your Git Bash is in a different location
         shell: 'C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}'
         run: |
           echo "==== ENVIRONMENT CHECK ===="
@@ -24,13 +23,20 @@ jobs:
           echo "RUNNER_LABELS: $RUNNER_LABELS"
           echo "PATH: $PATH"
           echo "Git Bash binary: $(which bash || true)"
+          echo "Checking docker..."
           docker --version || true
           docker info || true
+          echo "Checking kind..."
           kind --version || true
+          echo "Checking kubectl..."
           kubectl version --client --short || true
+          echo "Checking helm..."
           helm version --short || true
-          echo "KUBECONFIG: ${KUBECONFIG:-$HOME/.kube/config}"
-          ls -la "${KUBECONFIG:-$HOME/.kube/config}" || true
+          echo "Checking kubeconfig (POSIX path conversion)..."
+          POSIX_HOME=$(cygpath -u "$HOME" 2>/dev/null || echo "$HOME")
+          echo "POSIX_HOME=$POSIX_HOME"
+          ls -la "${KUBECONFIG:-$POSIX_HOME/.kube/config}" || true
+          echo "==== END ENV CHECK ===="
 
       - name: Ensure kubectl can see cluster
         shell: 'C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}'
@@ -52,10 +58,12 @@ jobs:
         run: |
           VALUES_FILE="./charts/prom-values.yaml"
           if [ -f "$VALUES_FILE" ]; then
+            echo "Using values file: $VALUES_FILE"
             helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
               --namespace "$HELM_NAMESPACE" --create-namespace -f "$VALUES_FILE" \
               --wait --timeout 10m
           else
+            echo "No values file found; using --set overrides (ensures valid Prometheus CRD field)"
             helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
               --namespace "$HELM_NAMESPACE" --create-namespace \
               --set prometheus.prometheusSpec.maximumStartupDurationSeconds=60 \
@@ -66,16 +74,36 @@ jobs:
       - name: Wait for Prometheus pods and show status
         shell: 'C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}'
         run: |
+          echo "Pods in monitoring namespace:"
           kubectl -n monitoring get pods -o wide || true
+          echo "Services in monitoring namespace:"
           kubectl -n monitoring get svc -o wide || true
 
       - name: Show Prometheus CR and events (if exists)
         shell: 'C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}'
         run: |
           if kubectl -n monitoring get prometheus prometheus-kube-prometheus-prometheus >/dev/null 2>&1; then
+            echo "Prometheus CR:"
             kubectl -n monitoring get prometheus prometheus-kube-prometheus-prometheus -o yaml || true
+            echo "Prometheus describe:"
             kubectl -n monitoring describe prometheus prometheus-kube-prometheus-prometheus || true
           else
             echo "Prometheus CR not found yet."
           fi
+          echo "Recent events in monitoring namespace:"
           kubectl -n monitoring get events --sort-by='.lastTimestamp' || true
+
+      - name: Optional: Port-forward Grafana (background) - for manual debugging only
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: 'C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}'
+        run: |
+          echo "Attempting port-forward for Grafana (will run for 30s)..."
+          if kubectl -n monitoring get svc grafana >/dev/null 2>&1; then
+            kubectl -n monitoring port-forward svc/grafana 3000:80 --address 127.0.0.1 &
+            PF_PID=$!
+            sleep 30
+            kill $PF_PID || true
+            echo "Port-forward finished. Access http://127.0.0.1:3000 while the runner host is reachable."
+          else
+            echo "Grafana svc not present"
+          fi
