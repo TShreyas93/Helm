@@ -33,7 +33,6 @@ jobs:
           try { & kubectl version --client --short } catch { Write-Output "kubectl: not available or error: $_" }
           Write-Output "Checking helm..."
           try { & helm version --short } catch { Write-Output "helm: not available or error: $_" }
-          # kubeconfig path check
           $kcfg = $env:KUBECONFIG
           if (-not $kcfg) { $kcfg = Join-Path $env:USERPROFILE ".kube\config" }
           Write-Output "KUBECONFIG: $kcfg"
@@ -69,20 +68,14 @@ jobs:
             $valuesFile = Join-Path $PWD "charts\prom-values.yaml"
             if (Test-Path $valuesFile) {
               Write-Output "Using values file: $valuesFile"
-              & helm upgrade --install prometheus prometheus-community/kube-prometheus-stack `
-                --namespace $env:HELM_NAMESPACE --create-namespace -f $valuesFile `
-                --wait --timeout 10m
+              & helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --namespace $env:HELM_NAMESPACE --create-namespace -f $valuesFile --wait --timeout 10m
             } else {
               Write-Output "No values file found; using --set overrides (ensures valid Prometheus CRD field)"
-              & helm upgrade --install prometheus prometheus-community/kube-prometheus-stack `
-                --namespace $env:HELM_NAMESPACE --create-namespace `
-                --set prometheus.prometheusSpec.maximumStartupDurationSeconds=60 `
-                --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false `
-                --wait --timeout 10m
+              & helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --namespace $env:HELM_NAMESPACE --create-namespace --set prometheus.prometheusSpec.maximumStartupDurationSeconds=60 --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false --wait --timeout 10m
             }
           } catch {
             Write-Error "Helm upgrade/install failed: $_"
-            Write-Output "Attempting to gather more debug information..."
+            Write-Output "Gathering debug information..."
             kubectl -n $env:HELM_NAMESPACE get pods -o wide || true
             kubectl -n $env:HELM_NAMESPACE get events --sort-by='.lastTimestamp' || true
             exit 1
@@ -91,17 +84,9 @@ jobs:
       - name: Wait for Prometheus pods and show status
         run: |
           Write-Output "Pods in monitoring namespace:"
-          try {
-            kubectl -n monitoring get pods -o wide
-          } catch {
-            Write-Output "Error listing pods: $_"
-          }
+          try { kubectl -n monitoring get pods -o wide } catch { Write-Output "Error listing pods: $_" }
           Write-Output "Services in monitoring namespace:"
-          try {
-            kubectl -n monitoring get svc -o wide
-          } catch {
-            Write-Output "Error listing services: $_"
-          }
+          try { kubectl -n monitoring get svc -o wide } catch { Write-Output "Error listing services: $_" }
 
       - name: Show Prometheus CR and recent events (if exists)
         run: |
@@ -125,12 +110,11 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           try {
-            # Start a background kubectl port-forward process
             if (kubectl -n monitoring get svc grafana >/dev/null 2>&1) {
               Write-Output "Starting port-forward to Grafana (localhost:3000) for 30s..."
-              $p = Start-Process -FilePath "kubectl" -ArgumentList "-n monitoring port-forward svc/grafana 3000:80 --address 127.0.0.1" -WindowStyle Hidden -PassThru
+              $proc = Start-Process -FilePath "kubectl" -ArgumentList "-n monitoring port-forward svc/grafana 3000:80 --address 127.0.0.1" -WindowStyle Hidden -PassThru
               Start-Sleep -Seconds 30
-              if ($p -and !$p.HasExited) { $p | Stop-Process -Force }
+              if ($proc -and -not $proc.HasExited) { $proc | Stop-Process -Force }
               Write-Output "Port-forward finished."
             } else {
               Write-Output "Grafana service not present; skipping port-forward."
