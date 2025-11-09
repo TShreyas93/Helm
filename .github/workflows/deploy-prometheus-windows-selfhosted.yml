@@ -1,0 +1,77 @@
+name: Deploy Prometheus to local kind (Windows self-hosted)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, windows, local-kind]  # adjust labels to match your runner
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show environment (bash)
+        shell: bash
+        run: |
+          echo "USER: $(whoami)"
+          echo "RUNNER_LABELS: $RUNNER_LABELS"
+          echo "PATH: $PATH"
+          echo "Checking docker..."
+          docker --version || true
+          docker info || true
+          echo "Checking kind..."
+          kind --version || true
+          echo "Checking kubectl..."
+          kubectl version --client --short || true
+          echo "Checking helm..."
+          helm version --short || true
+          echo "KUBECONFIG: ${KUBECONFIG:-$HOME/.kube/config}"
+          ls -la "${KUBECONFIG:-$HOME/.kube/config}" || true
+
+      - name: Ensure kubectl can see cluster
+        shell: bash
+        run: |
+          set -e
+          kubectl cluster-info
+          kubectl get nodes -o wide
+
+      - name: Add Prometheus Helm repo
+        shell: bash
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
+
+      - name: Deploy/Upgrade kube-prometheus-stack
+        shell: bash
+        env:
+          HELM_NAMESPACE: monitoring
+        run: |
+          set -e
+          # optional: use values file in repo if present
+          VALUES_FILE="./charts/prom-values.yaml"
+          if [ -f "$VALUES_FILE" ]; then
+            echo "Using values file $VALUES_FILE"
+            helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+              --namespace "$HELM_NAMESPACE" --create-namespace -f "$VALUES_FILE" \
+              --wait --timeout 10m
+          else
+            helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+              --namespace "$HELM_NAMESPACE" --create-namespace \
+              --set prometheus.prometheusSpec.maximumStartupDurationSeconds=60 \
+              --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+              --wait --timeout 10m
+          fi
+
+      - name: Wait & verify
+        shell: bash
+        run: |
+          set -e
+          kubectl -n monitoring get pods -o wide
+          # show Prometheus CR
+          kubectl -n monitoring get prometheus prometheus-kube-prometheus-prometheus -o yaml || true
+          kubectl -n monitoring describe prometheus prometheus-kube-prometheus-prometheus || true
