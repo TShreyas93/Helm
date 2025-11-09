@@ -11,17 +11,13 @@ jobs:
     runs-on: [self-hosted, windows, local-kind]
     timeout-minutes: 60
 
-    # Force Git Bash as the shell for all `run` steps in this job.
-    # If your Git Bash is installed at a different path, update the path below.
-    defaults:
-      run:
-        shell: "C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}"
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Show environment (Git Bash)
+        # set Git Bash explicitly for this step; update path if your Git is elsewhere
+        shell: 'C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}'
         run: |
           echo "==== ENVIRONMENT CHECK ===="
           echo "USER: $(whoami)"
@@ -42,17 +38,20 @@ jobs:
           echo "==== END ENV CHECK ===="
 
       - name: Ensure kubectl can see cluster
+        shell: 'C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}'
         run: |
           kubectl cluster-info
           kubectl get nodes -o wide
 
       - name: Add Prometheus Helm repo
+        shell: 'C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}'
         run: |
           helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
           helm repo update
           helm repo list
 
       - name: Deploy/Upgrade kube-prometheus-stack
+        shell: 'C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}'
         env:
           HELM_NAMESPACE: monitoring
         run: |
@@ -72,6 +71,7 @@ jobs:
           fi
 
       - name: Wait for Prometheus pods and show status
+        shell: 'C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}'
         run: |
           echo "Pods in monitoring namespace:"
           kubectl -n monitoring get pods -o wide || true
@@ -79,6 +79,7 @@ jobs:
           kubectl -n monitoring get svc -o wide || true
 
       - name: Show Prometheus CR and events (if exists)
+        shell: 'C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}'
         run: |
           if kubectl -n monitoring get prometheus prometheus-kube-prometheus-prometheus >/dev/null 2>&1; then
             echo "Prometheus CR:"
@@ -93,6 +94,7 @@ jobs:
 
       - name: Optional: Port-forward Grafana (background) - for manual debugging only
         if: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: 'C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}'
         run: |
           echo "Attempting port-forward for Grafana (will run for 30s)..."
           if kubectl -n monitoring get svc grafana >/dev/null 2>&1; then
