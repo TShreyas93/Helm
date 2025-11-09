@@ -8,7 +8,7 @@ on:
 
 jobs:
   deploy:
-    runs-on: [self-hosted, windows, local-kind]  # adjust labels to match your runner
+    runs-on: [self-hosted]  # adjust labels to match your runner
     timeout-minutes: 60
 
     steps:
