@@ -16,12 +16,6 @@ jobs:
         shell: powershell
 
     steps:
-      - name: Allow PowerShell scripts for this session
-        run: |
-          Write-Output "Temporarily allowing script execution for this workflow run..."
-          Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
-          Write-Output "Execution policy set to: $(Get-ExecutionPolicy -Scope Process)"
-
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -30,39 +24,23 @@ jobs:
           Write-Output "==== ENVIRONMENT CHECK ===="
           Write-Output "USER: $env:USERNAME"
           Write-Output "PATH: $env:PATH"
-          Write-Output "Checking docker..."
-          try { docker --version; docker info } catch { Write-Output "docker missing or failed" }
-          Write-Output "Checking kind..."
-          try { kind --version } catch { Write-Output "kind missing or failed" }
-          Write-Output "Checking kubectl..."
-          try { kubectl version --client --short } catch { Write-Output "kubectl missing or failed" }
-          Write-Output "Checking helm..."
-          try { helm version --short } catch { Write-Output "helm missing or failed" }
+          try { docker --version; docker info } catch { Write-Output "docker missing" }
+          try { kind --version } catch { Write-Output "kind missing" }
+          try { kubectl version --client --short } catch { Write-Output "kubectl missing" }
+          try { helm version --short } catch { Write-Output "helm missing" }
           $kcfg = $env:KUBECONFIG
           if (-not $kcfg) { $kcfg = Join-Path $env:USERPROFILE ".kube\config" }
-          Write-Output "KUBECONFIG path: $kcfg"
-          if (Test-Path $kcfg) { Write-Output "kubeconfig exists" } else { Write-Output "kubeconfig NOT found" }
-          Write-Output "==== END ENV CHECK ===="
+          if (Test-Path $kcfg) { Write-Output "kubeconfig found: $kcfg" } else { Write-Output "kubeconfig not found" }
 
       - name: Verify cluster access
         run: |
-          try {
-            kubectl cluster-info
-            kubectl get nodes -o wide
-          } catch {
-            Write-Error "kubectl cannot access cluster"
-            exit 1
-          }
+          kubectl cluster-info
+          kubectl get nodes -o wide
 
       - name: Add Prometheus helm repo
         run: |
-          try {
-            helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-            helm repo update
-          } catch {
-            Write-Error "helm repo add/update failed"
-            exit 1
-          }
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm repo update
 
       - name: Deploy Prometheus
         env:
@@ -70,20 +48,16 @@ jobs:
         run: |
           $valuesFile = Join-Path $PWD 'charts\prom-values.yaml'
           if (Test-Path $valuesFile) {
-            Write-Output "Using values file: $valuesFile"
             helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --namespace $env:HELM_NAMESPACE --create-namespace -f $valuesFile --wait --timeout 10m
           } else {
-            Write-Output "No values file; using --set overrides"
             helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --namespace $env:HELM_NAMESPACE --create-namespace --set prometheus.prometheusSpec.maximumStartupDurationSeconds=60 --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false --wait --timeout 10m
           }
 
       - name: Show monitoring resources
         run: |
-          Write-Output "Pods in monitoring namespace:"
-          try { kubectl -n monitoring get pods -o wide } catch { Write-Output "No pods or error" }
-          Write-Output "Services in monitoring namespace:"
-          try { kubectl -n monitoring get svc -o wide } catch { Write-Output "No services or error" }
+          kubectl -n monitoring get pods -o wide
+          kubectl -n monitoring get svc -o wide
 
       - name: Show events
         run: |
-          try { kubectl -n monitoring get events --sort-by='.lastTimestamp' } catch { Write-Output "No events or namespace" }
+          kubectl -n monitoring get events --sort-by='.lastTimestamp'
