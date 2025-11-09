@@ -15,7 +15,7 @@ jobs:
     # If your Git Bash is installed at a different path, update the path below.
     defaults:
       run:
-        shell: 'C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}'
+        shell: "C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}"
 
     steps:
       - name: Checkout repository
