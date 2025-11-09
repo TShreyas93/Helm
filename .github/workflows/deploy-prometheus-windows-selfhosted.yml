@@ -19,106 +19,63 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Show environment (PowerShell)
+      - name: Environment check
         run: |
-          Write-Output "==== ENVIRONMENT CHECK ===="
           Write-Output "USER: $env:USERNAME"
-          Write-Output "RUNNER NAME / LABELS: (self-hosted)"
           Write-Output "PATH: $env:PATH"
           Write-Output "Checking docker..."
-          try { docker --version; docker info } catch { Write-Output "docker: not available or error: $_" }
+          try { docker --version; docker info } catch { Write-Output "docker not available or failed" }
           Write-Output "Checking kind..."
-          try { & kind --version } catch { Write-Output "kind: not available or error: $_" }
+          try { & kind --version } catch { Write-Output "kind not available or failed" }
           Write-Output "Checking kubectl..."
-          try { & kubectl version --client --short } catch { Write-Output "kubectl: not available or error: $_" }
+          try { & kubectl version --client --short } catch { Write-Output "kubectl not available or failed" }
           Write-Output "Checking helm..."
-          try { & helm version --short } catch { Write-Output "helm: not available or error: $_" }
+          try { & helm version --short } catch { Write-Output "helm not available or failed" }
           $kcfg = $env:KUBECONFIG
           if (-not $kcfg) { $kcfg = Join-Path $env:USERPROFILE ".kube\config" }
           Write-Output "KUBECONFIG: $kcfg"
-          if (Test-Path $kcfg) { Get-Item $kcfg | Format-List } else { Write-Output "kubeconfig not found at $kcfg" }
-          Write-Output "==== END ENV CHECK ===="
+          if (Test-Path $kcfg) { Write-Output "kubeconfig exists" } else { Write-Output "kubeconfig NOT found" }
 
-      - name: Ensure kubectl can see cluster
+      - name: Verify cluster access
         run: |
           try {
             kubectl cluster-info
             kubectl get nodes -o wide
           } catch {
-            Write-Error "kubectl cluster access failed: $_"
+            Write-Error "kubectl cannot access cluster"
             exit 1
           }
 
-      - name: Add Prometheus Helm repo
+      - name: Add Prometheus helm repo
         run: |
           try {
             helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
             helm repo update
-            helm repo list
           } catch {
-            Write-Error "helm repo operations failed: $_"
+            Write-Error "helm repo add/update failed"
             exit 1
           }
 
-      - name: Deploy/Upgrade kube-prometheus-stack
+      - name: Deploy Prometheus
         env:
           HELM_NAMESPACE: monitoring
         run: |
-          try {
-            $valuesFile = Join-Path $PWD "charts\prom-values.yaml"
-            if (Test-Path $valuesFile) {
-              Write-Output "Using values file: $valuesFile"
-              & helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --namespace $env:HELM_NAMESPACE --create-namespace -f $valuesFile --wait --timeout 10m
-            } else {
-              Write-Output "No values file found; using --set overrides (ensures valid Prometheus CRD field)"
-              & helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --namespace $env:HELM_NAMESPACE --create-namespace --set prometheus.prometheusSpec.maximumStartupDurationSeconds=60 --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false --wait --timeout 10m
-            }
-          } catch {
-            Write-Error "Helm upgrade/install failed: $_"
-            Write-Output "Gathering debug information..."
-            kubectl -n $env:HELM_NAMESPACE get pods -o wide || true
-            kubectl -n $env:HELM_NAMESPACE get events --sort-by='.lastTimestamp' || true
-            exit 1
+          $valuesFile = Join-Path $PWD "charts\prom-values.yaml"
+          if (Test-Path $valuesFile) {
+            Write-Output "Using values file: $valuesFile"
+            & helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --namespace $env:HELM_NAMESPACE --create-namespace -f $valuesFile --wait --timeout 10m
+          } else {
+            Write-Output "No values file found; using --set overrides"
+            & helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --namespace $env:HELM_NAMESPACE --create-namespace --set prometheus.prometheusSpec.maximumStartupDurationSeconds=60 --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false --wait --timeout 10m
           }
 
-      - name: Wait for Prometheus pods and show status
+      - name: Show monitoring resources
         run: |
           Write-Output "Pods in monitoring namespace:"
-          try { kubectl -n monitoring get pods -o wide } catch { Write-Output "Error listing pods: $_" }
+          kubectl -n monitoring get pods -o wide || Write-Output "No pods or namespace"
           Write-Output "Services in monitoring namespace:"
-          try { kubectl -n monitoring get svc -o wide } catch { Write-Output "Error listing services: $_" }
+          kubectl -n monitoring get svc -o wide || Write-Output "No services or namespace"
 
-      - name: Show Prometheus CR and recent events (if exists)
+      - name: Show recent events
         run: |
-          try {
-            $crExists = (kubectl -n monitoring get prometheus prometheus-kube-prometheus-prometheus -o name 2>$null)
-            if ($crExists) {
-              Write-Output "Prometheus CR (yaml):"
-              kubectl -n monitoring get prometheus prometheus-kube-prometheus-prometheus -o yaml || true
-              Write-Output "Prometheus describe:"
-              kubectl -n monitoring describe prometheus prometheus-kube-prometheus-prometheus || true
-            } else {
-              Write-Output "Prometheus CR not found yet."
-            }
-          } catch {
-            Write-Output "Error checking Prometheus CR: $_"
-          }
-          Write-Output "Recent events in monitoring namespace:"
-          kubectl -n monitoring get events --sort-by='.lastTimestamp' || true
-
-      - name: Optional: Short port-forward Grafana for manual debugging (only on manual run)
-        if: ${{ github.event_name == 'workflow_dispatch' }}
-        run: |
-          try {
-            if (kubectl -n monitoring get svc grafana >/dev/null 2>&1) {
-              Write-Output "Starting port-forward to Grafana (localhost:3000) for 30s..."
-              $proc = Start-Process -FilePath "kubectl" -ArgumentList "-n monitoring port-forward svc/grafana 3000:80 --address 127.0.0.1" -WindowStyle Hidden -PassThru
-              Start-Sleep -Seconds 30
-              if ($proc -and -not $proc.HasExited) { $proc | Stop-Process -Force }
-              Write-Output "Port-forward finished."
-            } else {
-              Write-Output "Grafana service not present; skipping port-forward."
-            }
-          } catch {
-            Write-Output "Port-forward failed or timed out: $_"
-          }
+          kubectl -n monitoring get events --sort-by='.lastTimestamp' || Write-Output "No events or namespace"
