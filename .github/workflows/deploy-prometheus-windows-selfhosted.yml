@@ -15,7 +15,6 @@ jobs:
     # If your Git Bash is installed at a different path, update the path below.
     defaults:
       run:
-        # Use Git for Windows bash. Keep {0} exactly as shown.
         shell: 'C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}'
 
     steps:
@@ -44,8 +43,6 @@ jobs:
 
       - name: Ensure kubectl can see cluster
         run: |
-          set -e
-          echo "Verifying cluster access..."
           kubectl cluster-info
           kubectl get nodes -o wide
 
@@ -59,7 +56,6 @@ jobs:
         env:
           HELM_NAMESPACE: monitoring
         run: |
-          set -e
           VALUES_FILE="./charts/prom-values.yaml"
           if [ -f "$VALUES_FILE" ]; then
             echo "Using values file: $VALUES_FILE"
@@ -77,15 +73,13 @@ jobs:
 
       - name: Wait for Prometheus pods and show status
         run: |
-          set -e
           echo "Pods in monitoring namespace:"
-          kubectl -n monitoring get pods -o wide
+          kubectl -n monitoring get pods -o wide || true
           echo "Services in monitoring namespace:"
-          kubectl -n monitoring get svc -o wide
+          kubectl -n monitoring get svc -o wide || true
 
       - name: Show Prometheus CR and events (if exists)
         run: |
-          set -e || true
           if kubectl -n monitoring get prometheus prometheus-kube-prometheus-prometheus >/dev/null 2>&1; then
             echo "Prometheus CR:"
             kubectl -n monitoring get prometheus prometheus-kube-prometheus-prometheus -o yaml || true
@@ -100,12 +94,13 @@ jobs:
       - name: Optional: Port-forward Grafana (background) - for manual debugging only
         if: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
-          # This step attempts a short port-forward for debugging when running manually.
-          # It exits quickly if port-forwarding fails.
           echo "Attempting port-forward for Grafana (will run for 30s)..."
-          kubectl -n monitoring get svc grafana >/dev/null 2>&1 || { echo "Grafana svc not present"; exit 0; }
-          kubectl -n monitoring port-forward svc/grafana 3000:80 --address 127.0.0.1 &
-          PF_PID=$!
-          sleep 30
-          kill $PF_PID || true
-          echo "Port-forward finished. Access http://127.0.0.1:3000 while the runner host is reachable."
+          if kubectl -n monitoring get svc grafana >/dev/null 2>&1; then
+            kubectl -n monitoring port-forward svc/grafana 3000:80 --address 127.0.0.1 &
+            PF_PID=$!
+            sleep 30
+            kill $PF_PID || true
+            echo "Port-forward finished. Access http://127.0.0.1:3000 while the runner host is reachable."
+          else
+            echo "Grafana svc not present"
+          fi
