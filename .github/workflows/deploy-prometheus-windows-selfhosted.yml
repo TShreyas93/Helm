@@ -1,4 +1,4 @@
-name: Deploy Prometheus to local kind (Windows self-hosted - Git Bash)
+name: Deploy Prometheus to local kind (Windows self-hosted - PowerShell)
 
 on:
   workflow_dispatch:
@@ -11,99 +11,130 @@ jobs:
     runs-on: [self-hosted]
     timeout-minutes: 60
 
+    defaults:
+      run:
+        shell: pwsh
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Show environment (Git Bash)
-        shell: 'C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}'
+      - name: Show environment (PowerShell)
         run: |
-          echo "==== ENVIRONMENT CHECK ===="
-          echo "USER: $(whoami)"
-          echo "RUNNER_LABELS: $RUNNER_LABELS"
-          echo "PATH: $PATH"
-          echo "Git Bash binary: $(which bash || true)"
-          echo "Checking docker..."
-          docker --version || true
-          docker info || true
-          echo "Checking kind..."
-          kind --version || true
-          echo "Checking kubectl..."
-          kubectl version --client --short || true
-          echo "Checking helm..."
-          helm version --short || true
-          echo "Checking kubeconfig (POSIX path conversion)..."
-          POSIX_HOME=$(cygpath -u "$HOME" 2>/dev/null || echo "$HOME")
-          echo "POSIX_HOME=$POSIX_HOME"
-          ls -la "${KUBECONFIG:-$POSIX_HOME/.kube/config}" || true
-          echo "==== END ENV CHECK ===="
+          Write-Output "==== ENVIRONMENT CHECK ===="
+          Write-Output "USER: $env:USERNAME"
+          Write-Output "RUNNER NAME / LABELS: (self-hosted)"
+          Write-Output "PATH: $env:PATH"
+          Write-Output "Checking docker..."
+          try { docker --version; docker info } catch { Write-Output "docker: not available or error: $_" }
+          Write-Output "Checking kind..."
+          try { & kind --version } catch { Write-Output "kind: not available or error: $_" }
+          Write-Output "Checking kubectl..."
+          try { & kubectl version --client --short } catch { Write-Output "kubectl: not available or error: $_" }
+          Write-Output "Checking helm..."
+          try { & helm version --short } catch { Write-Output "helm: not available or error: $_" }
+          # kubeconfig path check
+          $kcfg = $env:KUBECONFIG
+          if (-not $kcfg) { $kcfg = Join-Path $env:USERPROFILE ".kube\config" }
+          Write-Output "KUBECONFIG: $kcfg"
+          if (Test-Path $kcfg) { Get-Item $kcfg | Format-List } else { Write-Output "kubeconfig not found at $kcfg" }
+          Write-Output "==== END ENV CHECK ===="
 
       - name: Ensure kubectl can see cluster
-        shell: 'C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}'
         run: |
-          kubectl cluster-info
-          kubectl get nodes -o wide
+          try {
+            kubectl cluster-info
+            kubectl get nodes -o wide
+          } catch {
+            Write-Error "kubectl cluster access failed: $_"
+            exit 1
+          }
 
       - name: Add Prometheus Helm repo
-        shell: 'C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}'
         run: |
-          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-          helm repo update
-          helm repo list
+          try {
+            helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+            helm repo update
+            helm repo list
+          } catch {
+            Write-Error "helm repo operations failed: $_"
+            exit 1
+          }
 
       - name: Deploy/Upgrade kube-prometheus-stack
-        shell: 'C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}'
         env:
           HELM_NAMESPACE: monitoring
         run: |
-          VALUES_FILE="./charts/prom-values.yaml"
-          if [ -f "$VALUES_FILE" ]; then
-            echo "Using values file: $VALUES_FILE"
-            helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
-              --namespace "$HELM_NAMESPACE" --create-namespace -f "$VALUES_FILE" \
-              --wait --timeout 10m
-          else
-            echo "No values file found; using --set overrides (ensures valid Prometheus CRD field)"
-            helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
-              --namespace "$HELM_NAMESPACE" --create-namespace \
-              --set prometheus.prometheusSpec.maximumStartupDurationSeconds=60 \
-              --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
-              --wait --timeout 10m
-          fi
+          try {
+            $valuesFile = Join-Path $PWD "charts\prom-values.yaml"
+            if (Test-Path $valuesFile) {
+              Write-Output "Using values file: $valuesFile"
+              & helm upgrade --install prometheus prometheus-community/kube-prometheus-stack `
+                --namespace $env:HELM_NAMESPACE --create-namespace -f $valuesFile `
+                --wait --timeout 10m
+            } else {
+              Write-Output "No values file found; using --set overrides (ensures valid Prometheus CRD field)"
+              & helm upgrade --install prometheus prometheus-community/kube-prometheus-stack `
+                --namespace $env:HELM_NAMESPACE --create-namespace `
+                --set prometheus.prometheusSpec.maximumStartupDurationSeconds=60 `
+                --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false `
+                --wait --timeout 10m
+            }
+          } catch {
+            Write-Error "Helm upgrade/install failed: $_"
+            Write-Output "Attempting to gather more debug information..."
+            kubectl -n $env:HELM_NAMESPACE get pods -o wide || true
+            kubectl -n $env:HELM_NAMESPACE get events --sort-by='.lastTimestamp' || true
+            exit 1
+          }
 
       - name: Wait for Prometheus pods and show status
-        shell: 'C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}'
         run: |
-          echo "Pods in monitoring namespace:"
-          kubectl -n monitoring get pods -o wide || true
-          echo "Services in monitoring namespace:"
-          kubectl -n monitoring get svc -o wide || true
+          Write-Output "Pods in monitoring namespace:"
+          try {
+            kubectl -n monitoring get pods -o wide
+          } catch {
+            Write-Output "Error listing pods: $_"
+          }
+          Write-Output "Services in monitoring namespace:"
+          try {
+            kubectl -n monitoring get svc -o wide
+          } catch {
+            Write-Output "Error listing services: $_"
+          }
 
-      - name: Show Prometheus CR and events (if exists)
-        shell: 'C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}'
+      - name: Show Prometheus CR and recent events (if exists)
         run: |
-          if kubectl -n monitoring get prometheus prometheus-kube-prometheus-prometheus >/dev/null 2>&1; then
-            echo "Prometheus CR:"
-            kubectl -n monitoring get prometheus prometheus-kube-prometheus-prometheus -o yaml || true
-            echo "Prometheus describe:"
-            kubectl -n monitoring describe prometheus prometheus-kube-prometheus-prometheus || true
-          else
-            echo "Prometheus CR not found yet."
-          fi
-          echo "Recent events in monitoring namespace:"
+          try {
+            $crExists = (kubectl -n monitoring get prometheus prometheus-kube-prometheus-prometheus -o name 2>$null)
+            if ($crExists) {
+              Write-Output "Prometheus CR (yaml):"
+              kubectl -n monitoring get prometheus prometheus-kube-prometheus-prometheus -o yaml || true
+              Write-Output "Prometheus describe:"
+              kubectl -n monitoring describe prometheus prometheus-kube-prometheus-prometheus || true
+            } else {
+              Write-Output "Prometheus CR not found yet."
+            }
+          } catch {
+            Write-Output "Error checking Prometheus CR: $_"
+          }
+          Write-Output "Recent events in monitoring namespace:"
           kubectl -n monitoring get events --sort-by='.lastTimestamp' || true
 
-      - name: Optional: Port-forward Grafana (background) - for manual debugging only
+      - name: Optional: Short port-forward Grafana for manual debugging (only on manual run)
         if: ${{ github.event_name == 'workflow_dispatch' }}
-        shell: 'C:\\Program Files\\Git\\bin\\bash.exe -l -o pipefail {0}'
         run: |
-          echo "Attempting port-forward for Grafana (will run for 30s)..."
-          if kubectl -n monitoring get svc grafana >/dev/null 2>&1; then
-            kubectl -n monitoring port-forward svc/grafana 3000:80 --address 127.0.0.1 &
-            PF_PID=$!
-            sleep 30
-            kill $PF_PID || true
-            echo "Port-forward finished. Access http://127.0.0.1:3000 while the runner host is reachable."
-          else
-            echo "Grafana svc not present"
-          fi
+          try {
+            # Start a background kubectl port-forward process
+            if (kubectl -n monitoring get svc grafana >/dev/null 2>&1) {
+              Write-Output "Starting port-forward to Grafana (localhost:3000) for 30s..."
+              $p = Start-Process -FilePath "kubectl" -ArgumentList "-n monitoring port-forward svc/grafana 3000:80 --address 127.0.0.1" -WindowStyle Hidden -PassThru
+              Start-Sleep -Seconds 30
+              if ($p -and !$p.HasExited) { $p | Stop-Process -Force }
+              Write-Output "Port-forward finished."
+            } else {
+              Write-Output "Grafana service not present; skipping port-forward."
+            }
+          } catch {
+            Write-Output "Port-forward failed or timed out: $_"
+          }
