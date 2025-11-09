@@ -13,7 +13,7 @@ jobs:
 
     defaults:
       run:
-        shell: pwsh
+        shell: powershell
 
     steps:
       - name: Checkout repository
@@ -21,20 +21,22 @@ jobs:
 
       - name: Environment check
         run: |
+          Write-Output "==== ENVIRONMENT CHECK ===="
           Write-Output "USER: $env:USERNAME"
           Write-Output "PATH: $env:PATH"
           Write-Output "Checking docker..."
           try { docker --version; docker info } catch { Write-Output "docker not available or failed" }
           Write-Output "Checking kind..."
-          try { & kind --version } catch { Write-Output "kind not available or failed" }
+          try { kind --version } catch { Write-Output "kind not available or failed" }
           Write-Output "Checking kubectl..."
-          try { & kubectl version --client --short } catch { Write-Output "kubectl not available or failed" }
+          try { kubectl version --client --short } catch { Write-Output "kubectl not available or failed" }
           Write-Output "Checking helm..."
-          try { & helm version --short } catch { Write-Output "helm not available or failed" }
+          try { helm version --short } catch { Write-Output "helm not available or failed" }
           $kcfg = $env:KUBECONFIG
           if (-not $kcfg) { $kcfg = Join-Path $env:USERPROFILE ".kube\config" }
-          Write-Output "KUBECONFIG: $kcfg"
+          Write-Output "KUBECONFIG path: $kcfg"
           if (Test-Path $kcfg) { Write-Output "kubeconfig exists" } else { Write-Output "kubeconfig NOT found" }
+          Write-Output "==== END ENV CHECK ===="
 
       - name: Verify cluster access
         run: |
@@ -46,7 +48,7 @@ jobs:
             exit 1
           }
 
-      - name: Add Prometheus helm repo
+      - name: Add Prometheus Helm repo
         run: |
           try {
             helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
@@ -60,22 +62,66 @@ jobs:
         env:
           HELM_NAMESPACE: monitoring
         run: |
-          $valuesFile = Join-Path $PWD "charts\prom-values.yaml"
-          if (Test-Path $valuesFile) {
-            Write-Output "Using values file: $valuesFile"
-            & helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --namespace $env:HELM_NAMESPACE --create-namespace -f $valuesFile --wait --timeout 10m
-          } else {
-            Write-Output "No values file found; using --set overrides"
-            & helm upgrade --install prometheus prometheus-community/kube-prometheus-stack --namespace $env:HELM_NAMESPACE --create-namespace --set prometheus.prometheusSpec.maximumStartupDurationSeconds=60 --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false --wait --timeout 10m
+          try {
+            $valuesFile = Join-Path $PWD "charts\prom-values.yaml"
+            if (Test-Path $valuesFile) {
+              Write-Output "Using values file: $valuesFile"
+              helm upgrade --install prometheus prometheus-community/kube-prometheus-stack `
+                --namespace $env:HELM_NAMESPACE --create-namespace -f $valuesFile `
+                --wait --timeout 10m
+            } else {
+              Write-Output "No values file found; using --set overrides"
+              helm upgrade --install prometheus prometheus-community/kube-prometheus-stack `
+                --namespace $env:HELM_NAMESPACE --create-namespace `
+                --set prometheus.prometheusSpec.maximumStartupDurationSeconds=60 `
+                --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false `
+                --wait --timeout 10m
+            }
+          } catch {
+            Write-Error "Helm upgrade/install failed: $_"
+            kubectl -n $env:HELM_NAMESPACE get pods -o wide | Out-Host
+            kubectl -n $env:HELM_NAMESPACE get events --sort-by='.lastTimestamp' | Out-Host
+            exit 1
           }
 
       - name: Show monitoring resources
         run: |
           Write-Output "Pods in monitoring namespace:"
-          kubectl -n monitoring get pods -o wide || Write-Output "No pods or namespace"
+          try { kubectl -n monitoring get pods -o wide } catch { Write-Output "Error listing pods" }
           Write-Output "Services in monitoring namespace:"
-          kubectl -n monitoring get svc -o wide || Write-Output "No services or namespace"
+          try { kubectl -n monitoring get svc -o wide } catch { Write-Output "Error listing services" }
 
-      - name: Show recent events
+      - name: Show Prometheus CR and recent events
         run: |
-          kubectl -n monitoring get events --sort-by='.lastTimestamp' || Write-Output "No events or namespace"
+          try {
+            $crExists = kubectl -n monitoring get prometheus prometheus-kube-prometheus-prometheus -o name 2>$null
+            if ($crExists) {
+              Write-Output "Prometheus CR YAML:"
+              kubectl -n monitoring get prometheus prometheus-kube-prometheus-prometheus -o yaml | Out-Host
+              Write-Output "Prometheus describe:"
+              kubectl -n monitoring describe prometheus prometheus-kube-prometheus-prometheus | Out-Host
+            } else {
+              Write-Output "Prometheus CR not found yet."
+            }
+          } catch {
+            Write-Output "Error checking Prometheus CR: $_"
+          }
+          Write-Output "Recent events in monitoring namespace:"
+          kubectl -n monitoring get events --sort-by='.lastTimestamp' | Out-Host
+
+      - name: Optional: Short port-forward Grafana (only manual run)
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          try {
+            if (kubectl -n monitoring get svc grafana 2>$null) {
+              Write-Output "Starting port-forward to Grafana (localhost:3000) for 30s..."
+              $proc = Start-Process -FilePath "kubectl" -ArgumentList "-n monitoring port-forward svc/grafana 3000:80 --address 127.0.0.1" -PassThru -WindowStyle Hidden
+              Start-Sleep -Seconds 30
+              if ($proc -and -not $proc.HasExited) { $proc | Stop-Process -Force }
+              Write-Output "Port-forward finished."
+            } else {
+              Write-Output "Grafana service not found; skipping."
+            }
+          } catch {
+            Write-Output "Port-forward failed: $_"
+          }
